@@ -1,8 +1,9 @@
 package FusionInventory::Agent::Task::SNMPQuery;
-our $VERSION = '1.1';
+our $VERSION = '1.2';
 use strict;
 no strict 'refs';
 use warnings;
+use Encode qw(encode);
 
 use threads;
 use threads::shared;
@@ -32,8 +33,10 @@ use FusionInventory::Agent::AccountInfo;
 
 my $maxIdx : shared = 0;
 
+$SIG{INT} = \&signals;
+
 sub main {
-    my ( undef ) = @_;
+    my ( $action ) = @_;
 
     my $self = {};
     bless $self;
@@ -96,9 +99,11 @@ sub main {
 
       });
 
-
-   $self->StartThreads();
-
+   if (defined($action) && $action eq "finish") {
+      $self->sendEndToServer();
+   } else {
+      $self->StartThreads();
+   }
    exit(0);
 }
 
@@ -433,6 +438,30 @@ sub StartThreads {
 
 
 
+sub sendEndToServer() {
+   my ($self) = @_;
+
+   my $network = $self->{network} = new FusionInventory::Agent::Network ({
+
+            logger => $self->{logger},
+            config => $self->{config},
+            target => $self->{target},
+
+        });
+   push(@LWP::Protocol::http::EXTRA_SOCK_OPTS, MaxLineLength => 16*1024);
+
+   # Send infos to server :
+   my $xml_thread;
+   $xml_thread->{AGENT}->{END} = '1';
+   $xml_thread->{PROCESSNUMBER} = $self->{SNMPQUERY}->{PARAM}->[0]->{PID};
+   $self->SendInformations({
+      data => $xml_thread
+      });
+   undef($xml_thread);
+}
+
+
+
 sub SendInformations{
    my ($self, $message) = @_;
 
@@ -443,7 +472,6 @@ sub SendInformations{
    } elsif ($config->{local}) {
       $self->{inventory}->writeXML();
    } elsif ($config->{server}) {
-
       my $xmlMsg = FusionInventory::Agent::XML::Query::SimpleMessage->new(
            {
                config => $self->{config},
@@ -700,11 +728,13 @@ sub query_device_threaded {
                delete $HashDataSNMP->{VLAN}->{$vlan_id};
             }
          } else {
-            if ($datadevice->{INFO}->{COMMENTS} =~ /3Com IntelliJack/) {
-               ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::GetMAC($HashDataSNMP,$datadevice,$self,$params->{modellist}->{WALK});
-               $datadevice = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::RewritePortOf225($datadevice, $self);
-            } elsif ($datadevice->{INFO}->{COMMENTS} =~ /ProCurve/) {
-               ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Procurve::GetMAC($HashDataSNMP,$datadevice,$self, $params->{modellist}->{WALK});
+            if (defined ($datadevice->{INFO}->{COMMENTS})) {
+               if ($datadevice->{INFO}->{COMMENTS} =~ /3Com IntelliJack/) {
+                  ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::GetMAC($HashDataSNMP,$datadevice,$self,$params->{modellist}->{WALK});
+                  $datadevice = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::RewritePortOf225($datadevice, $self);
+               } elsif ($datadevice->{INFO}->{COMMENTS} =~ /ProCurve/) {
+                  ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Procurve::GetMAC($HashDataSNMP,$datadevice,$self, $params->{modellist}->{WALK});
+               }
             }
          }
       }
@@ -929,6 +959,17 @@ sub ConstructDataDeviceMultiple {
       }
       delete $HashDataSNMP->{ifPhysAddress};
    }
+   if (exists $HashDataSNMP->{ifaddr}) {
+      while ( ($object,$data) = each (%{$HashDataSNMP->{ifaddr}}) ) {
+         if ($data ne "") {
+             my $shortobject = $object;
+             $shortobject =~ s/$walkoid->{ifaddr}->{OID}//;
+             $shortobject =~ s/^.//;
+             $datadevice->{PORTS}->{PORT}->[$self->{portsindex}->{$data}]->{IP} = $shortobject;
+         }
+      }
+      delete $HashDataSNMP->{ifaddr};
+   }
    if (exists $HashDataSNMP->{portDuplex}) {
       while ( ($object,$data) = each (%{$HashDataSNMP->{portDuplex}}) ) {
          $datadevice->{PORTS}->{PORT}->[$self->{portsindex}->{lastSplitObject($object)}]->{IFPORTDUPLEX} = $data;
@@ -943,7 +984,7 @@ sub ConstructDataDeviceMultiple {
          ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Cisco::CDPPorts($HashDataSNMP,$datadevice, $walkoid, $self);
       } elsif ($datadevice->{INFO}->{COMMENTS} =~ /ProCurve/) {
          ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Cisco::TrunkPorts($HashDataSNMP,$datadevice, $self);
-         ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Cisco::CDPPorts($HashDataSNMP,$datadevice, $walkoid, $self);
+         ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Procurve::CDPLLDPPorts($HashDataSNMP,$datadevice, $walkoid, $self);
       }
    }
 
@@ -968,12 +1009,18 @@ sub PutSimpleOid {
    my $xmlelement2 = shift;
 
    if (exists $HashDataSNMP->{$element}) {
+      # Rewrite hexa to string
+      if (($element eq "name") || ($element eq "otherserial")) {
+         $HashDataSNMP->{$element} = HexaToString($HashDataSNMP->{$element});
+      }
+      # End rewrite hexa to string
       if (($element eq "ram") || ($element eq "memory")) {
          $HashDataSNMP->{$element} = int(( $HashDataSNMP->{$element} / 1024 ) / 1024);
       }
       if ($element eq "serial") {
          $HashDataSNMP->{$element} =~ s/^\s+//;
          $HashDataSNMP->{$element} =~ s/\s+$//;
+         $HashDataSNMP->{$element} =~ s/(\.{2,})*//g;
       }
       if ($element eq "firmware1") {
          $datadevice->{$xmlelement1}->{$xmlelement2} = $HashDataSNMP->{"firmware1"}." ".$HashDataSNMP->{"firmware2"};
@@ -1002,7 +1049,7 @@ sub PutPourcentageOid {
    my $xmlelement1 = shift;
    my $xmlelement2 = shift;
    if (exists $HashDataSNMP->{$element1}) {
-      if ((is_integer($HashDataSNMP->{$element2})) && (is_integer($HashDataSNMP->{$element1}))) {
+      if ((is_integer($HashDataSNMP->{$element2})) && (is_integer($HashDataSNMP->{$element1})) && ($HashDataSNMP->{$element1} ne '0')) {
          $datadevice->{$xmlelement1}->{$xmlelement2} = int ( ( 100 * $HashDataSNMP->{$element2} ) / $HashDataSNMP->{$element1} );
          delete $HashDataSNMP->{$element2};
          delete $HashDataSNMP->{$element1};
@@ -1041,6 +1088,29 @@ sub cartridgesupport {
 
 sub is_integer {
    $_[0] =~ /^[+-]?\d+$/;
+}
+
+sub HexaToString {
+   my $val = shift;
+
+   if ($val =~ /0x/) {
+      $val =~ s/0x//g;
+      $val =~ s/([a-fA-F0-9][a-fA-F0-9])/chr(hex($1))/g;
+      $val = encode('UTF-8', $val);
+      $val =~ s/\0//g;
+      $val =~ s/([\x80-\xFF])//g;
+      $val =~ s/[\x00-\x1F\x7F]//g;
+   }
+   return $val;
+}
+
+
+sub signals {
+    $SIG{INT} = \&signals;
+    warn "detection anormal end of runing program, will close it.\n";
+
+    main('finish');
+    exit();
 }
 
 
