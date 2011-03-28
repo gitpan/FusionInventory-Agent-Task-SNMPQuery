@@ -26,4 +26,4 @@ requires:
   threads: 0
 resources:
   license: http://opensource.org/licenses/gpl-license.php
-version: 1.2
+version: 1.3

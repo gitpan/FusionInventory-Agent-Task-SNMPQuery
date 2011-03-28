@@ -12,6 +12,7 @@ inc/Module/Install/Win32.pm
 inc/Module/Install/WriteAll.pm
 lib/FusionInventory/Agent/Task/SNMPQuery.pm
 lib/FusionInventory/Agent/Task/SNMPQuery/Cisco.pm
+lib/FusionInventory/Agent/Task/SNMPQuery/Nortel.pm
 lib/FusionInventory/Agent/Task/SNMPQuery/Procurve.pm
 lib/FusionInventory/Agent/Task/SNMPQuery/ThreeCom.pm
 LICENSE

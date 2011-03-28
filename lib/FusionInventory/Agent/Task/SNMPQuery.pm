@@ -1,5 +1,5 @@
 package FusionInventory::Agent::Task::SNMPQuery;
-our $VERSION = '1.2';
+our $VERSION = '1.3';
 use strict;
 no strict 'refs';
 use warnings;
@@ -28,6 +28,7 @@ use FusionInventory::Agent::SNMP;
 use FusionInventory::Agent::Task::SNMPQuery::Cisco;
 use FusionInventory::Agent::Task::SNMPQuery::Procurve;
 use FusionInventory::Agent::Task::SNMPQuery::ThreeCom;
+use FusionInventory::Agent::Task::SNMPQuery::Nortel;
 
 use FusionInventory::Agent::AccountInfo;
 
@@ -79,12 +80,12 @@ sub main {
       }
     }
     if ($continue eq "0") {
-        $logger->debug("No SNMPQuery. Exiting...");
+        $logger->debug("No SNMPQuery Asked by the server. Exiting...");
         exit(0);
     }
 
     if ($target->{'type'} ne 'server') {
-        $logger->debug("No server. Exiting...");
+        $logger->debug("No server to get order from. Exiting...");
         exit(0);
     }
 
@@ -465,27 +466,18 @@ sub sendEndToServer() {
 sub SendInformations{
    my ($self, $message) = @_;
 
-   my $config = $self->{config};
-
-   if ($config->{stdout}) {
-      $self->{inventory}->printXML();
-   } elsif ($config->{local}) {
-      $self->{inventory}->writeXML();
-   } elsif ($config->{server}) {
-      my $xmlMsg = FusionInventory::Agent::XML::Query::SimpleMessage->new(
+   my $xmlMsg = FusionInventory::Agent::XML::Query::SimpleMessage->new(
            {
-               config => $self->{config},
-               logger => $self->{logger},
-               target => $self->{target},
-               msg    => {
-                   QUERY => 'SNMPQUERY',
-                   CONTENT   => $message->{data},
-               },
+           config => $self->{config},
+           logger => $self->{logger},
+           target => $self->{target},
+           msg    => {
+           QUERY => 'SNMPQUERY',
+           CONTENT   => $message->{data},
+           },
            });
-    $self->{network}->send({message => $xmlMsg});
-   }
+   $self->{network}->send({message => $xmlMsg});
 }
-
 
 
 sub AuthParser {
@@ -730,10 +722,13 @@ sub query_device_threaded {
          } else {
             if (defined ($datadevice->{INFO}->{COMMENTS})) {
                if ($datadevice->{INFO}->{COMMENTS} =~ /3Com IntelliJack/) {
-                  ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::GetMAC($HashDataSNMP,$datadevice,$self,$params->{modellist}->{WALK});
                   $datadevice = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::RewritePortOf225($datadevice, $self);
+               } elsif ($datadevice->{INFO}->{COMMENTS} =~ /3Com/) {
+                  ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::ThreeCom::GetMAC($HashDataSNMP,$datadevice,$self,$params->{modellist}->{WALK});
                } elsif ($datadevice->{INFO}->{COMMENTS} =~ /ProCurve/) {
                   ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Procurve::GetMAC($HashDataSNMP,$datadevice,$self, $params->{modellist}->{WALK});
+               } elsif ($datadevice->{INFO}->{COMMENTS} =~ /Nortel/) {
+                  ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Nortel::GetMAC($HashDataSNMP,$datadevice,$self, $params->{modellist}->{WALK});
                }
             }
          }
@@ -985,6 +980,9 @@ sub ConstructDataDeviceMultiple {
       } elsif ($datadevice->{INFO}->{COMMENTS} =~ /ProCurve/) {
          ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Cisco::TrunkPorts($HashDataSNMP,$datadevice, $self);
          ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Procurve::CDPLLDPPorts($HashDataSNMP,$datadevice, $walkoid, $self);
+      } elsif ($datadevice->{INFO}->{COMMENTS} =~ /Nortel/) {
+         ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Nortel::VlanTrunkPorts($HashDataSNMP,$datadevice, $self);
+         ($datadevice, $HashDataSNMP) = FusionInventory::Agent::Task::SNMPQuery::Nortel::LLDPPorts($HashDataSNMP,$datadevice, $walkoid, $self);
       }
    }
 
